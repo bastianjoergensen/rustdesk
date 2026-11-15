@@ -75,6 +75,11 @@ class MainActivity : FlutterActivity() {
     private var isAudioStart = false
     private val audioRecordHandle = AudioRecordHandle(this, { false }, { isAudioStart })
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        QuickShare.deliver(this, intent)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         if (MainService.isReady) {
@@ -87,6 +92,9 @@ class MainActivity : FlutterActivity() {
             channelTag
         )
         initFlutterChannel(flutterMethodChannel!!)
+        RemoteIme.attach(this, flutterEngine)
+        QuickShare.attach(this, flutterEngine)
+        QuickShare.deliver(this, intent)
         thread {
             try {
                 setCodecInfo()
@@ -243,6 +251,9 @@ class MainActivity : FlutterActivity() {
         if (isFinishing) {
             FFI.closeAllSessions()
         }
+        // The Flutter engine goes with this activity, and with it the session
+        // pages the service keeps alive.
+        SessionService.stop(this)
         mainService?.let {
             unbindService(serviceConnection)
         }
@@ -366,6 +377,19 @@ class MainActivity : FlutterActivity() {
                 }
                 "try_sync_clipboard" -> {
                     rdClipboardManager?.syncClipboard(true)
+                    result.success(true)
+                }
+                "start_session_service" -> {
+                    val args = call.arguments as? Map<*, *>
+                    SessionService.start(
+                        this,
+                        args?.get("title") as? String ?: DEFAULT_NOTIFY_TITLE,
+                        args?.get("text") as? String ?: ""
+                    )
+                    result.success(true)
+                }
+                "stop_session_service" -> {
+                    SessionService.stop(this)
                     result.success(true)
                 }
                 GET_START_ON_BOOT_OPT -> {

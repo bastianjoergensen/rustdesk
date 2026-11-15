@@ -185,6 +185,8 @@ const String kOptionEnableTrustedDevices = "enable-trusted-devices";
 const String kOptionShowVirtualMouse = "show-virtual-mouse";
 const String kOptionVirtualMouseScale = "virtual-mouse-scale";
 const String kOptionShowVirtualJoystick = "show-virtual-joystick";
+const String kOptionSoftKeyboardRawInput = "soft-keyboard-raw-input";
+const String kOptionSoftKeyboardToolbar = "soft-keyboard-toolbar";
 const String kOptionAllowAskForNoteAtEndOfConnection = "allow-ask-for-note";
 const String kOptionAllowMonitorSwitchMainToolbar = "allow-monitor-switch-main-toolbar";
 const String kOptionAllowMonitorSwitchMinToolbar = "allow-monitor-switch-min-toolbar";
@@ -255,6 +257,8 @@ const String kKeyShowDisplaysAsIndividualWindows =
 const String kKeyUseAllMyDisplaysForTheRemoteSession =
     'use_all_my_displays_for_the_remote_session';
 const String kKeyShowMonitorsToolbar = 'show_monitors_toolbar';
+// The display last picked for a peer, so the next connection starts on it.
+const String kKeyLastDisplay = 'last_display';
 const String kKeyReverseMouseWheel = "reverse_mouse_wheel";
 
 const String kMsgboxTextWaitingForImage = 'Connected, waiting for image...';

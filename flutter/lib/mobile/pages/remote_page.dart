@@ -20,10 +20,16 @@ import '../../common/widgets/dialog.dart';
 import '../../common/widgets/remote_input.dart';
 import '../../models/input_model.dart';
 import '../../models/model.dart';
+import '../../models/quick_share.dart';
 import '../../models/platform_model.dart';
 import '../../utils/image.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
+import '../widgets/display_switch.dart';
+import '../widgets/keyboard_toolbar_editor.dart';
+import '../widgets/multi_display.dart';
+import '../widgets/quick_share_sheet.dart';
+import '../widgets/remote_keyboard.dart';
 
 final initText = '1' * 1024;
 
@@ -78,11 +84,29 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Worker? _waylandKeyboardGateWorker;
   bool _waylandKeyboardGateInitialized = false;
 
+  // Display picked on an earlier connection to this peer, restored once the
+  // first image is there.
+  int? _lastDisplay;
+
+  // The keyboard toolbar's hide key was used and the keyboard is still going
+  // away; the key help tools must not flash in meanwhile.
+  bool _hidingSoftKeyboard = false;
+
   InputModel get inputModel => gFFI.inputModel;
   SessionID get sessionId => gFFI.sessionId;
 
   final TextEditingController _textController =
       TextEditingController(text: initText);
+
+  // Android soft keyboard typing and extra keys.
+  late final RemoteKeyboardController _keyboard =
+      RemoteKeyboardController(gFFI, focusNode: _mobileFocusNode);
+
+  // All displays of the peer at once.
+  late final MobileMultiDisplay _multiDisplay;
+
+  // Files between the phone and the peer, over a second connection.
+  late final QuickShare _quickShare = QuickShare(widget.id, sessionId);
 
   _RemotePageState(String id) {
     initSharedStates(id);
@@ -94,12 +118,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     gFFI.ffiModel.updateEventListener(sessionId, widget.id);
+    _lastDisplay = int.tryParse(
+        bind.mainGetPeerOptionSync(id: widget.id, key: kKeyLastDisplay));
+    _multiDisplay = MobileMultiDisplay(gFFI, widget.id)
+      ..addListener(_onMultiDisplayChanged);
     gFFI.start(
       widget.id,
       password: widget.password,
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
     );
+    // Android freezes a backgrounded app within seconds and the connection
+    // drops; a foreground service keeps it running while another app is open.
+    gFFI.invokeMethod('start_session_service',
+        {'title': widget.id, 'text': translate('Connected')});
     WidgetsBinding.instance.addPostFrameCallback((_) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       gFFI.dialogManager
@@ -111,6 +143,12 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     gFFI.qualityMonitorModel.checkShowQualityMonitor(sessionId);
     keyboardSubscription =
         keyboardVisibilityController.onChange.listen(onSoftKeyboardChanged);
+    if (isAndroid) {
+      QuickShare.setIncomingHandler((paths) async {
+        unawaited(sendWithToast(_quickShare, paths));
+        return true;
+      });
+    }
     gFFI.chatModel
         .changeCurrentKey(MessageKey(widget.id, ChatModel.clientModeID));
     _blockableOverlayState.applyFfi(gFFI);
@@ -122,6 +160,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       }
       _disableAndroidSoftKeyboard(
           isKeyboardVisible: keyboardVisibilityController.isVisible);
+      _restoreLastDisplay();
+      _multiDisplay.onFirstImage();
     });
     WidgetsBinding.instance.addObserver(this);
 
@@ -150,7 +190,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     // down. The reconnect then re-attaches to the leaked session and is stuck on
     // "Connecting...". Dispatching it here makes teardown happen synchronously on
     // pop; the `sessionClose` in `gFFI.close()` becomes a no-op once removed.
+    // The extra display sessions first: the connection stays up while any
+    // session on it is left.
+    _multiDisplay.dispose();
     unawaited(bind.sessionClose(sessionId: sessionId));
+    unawaited(gFFI.invokeMethod('stop_session_service'));
     // https://github.com/flutter/flutter/issues/64935
     super.dispose();
     gFFI.dialogManager.hideMobileActionsOverlay(store: false);
@@ -158,6 +202,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     gFFI.imageModel.disposeImage();
     gFFI.cursorModel.disposeImages();
     await gFFI.invokeMethod("enable_soft_keyboard", true);
+    _keyboard.dispose();
+    if (isAndroid) QuickShare.setIncomingHandler(null);
+    _quickShare.close();
     _mobileFocusNode.dispose();
     _physicalFocusNode.dispose();
     clearWaylandKeyboardPromptSuppressedForConnection(sessionId.toString());
@@ -182,6 +229,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.resumed) {
       trySyncClipboard();
+      gFFI.ffiModel.reconnectIfPending();
     }
   }
 
@@ -189,6 +237,29 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   // When swithing from other app to this app, try to sync clipboard.
   void trySyncClipboard() {
     gFFI.invokeMethod("try_sync_clipboard");
+  }
+
+  // Returns to the display picked on an earlier connection to this peer, once
+  // the canvas is ready. Only the first image counts: later ones come from
+  // reconnects, which go back to the display picked in this session instead.
+  void _restoreLastDisplay() {
+    final last = _lastDisplay;
+    _lastDisplay = null;
+    if (last == null) return;
+    final pi = gFFI.ffiModel.pi;
+    final useAllMyDisplays = bind.sessionGetUseAllMyDisplaysForTheRemoteSession(
+            sessionId: sessionId) ==
+        'Y';
+    if (shouldRestoreDisplay(
+        last, pi, PrivacyModeState.find(widget.id).value,
+        useAllMyDisplays: useAllMyDisplays)) {
+      openMonitorInTheSameTab(last, gFFI, pi);
+    }
+  }
+
+  // Rearranging the displays needs the whole screen.
+  void _onMultiDisplayChanged() {
+    if (_multiDisplay.unlocked && _showEdit) _hideSoftKeyboard();
   }
 
   bool _shouldGateKeyboardForWayland() {
@@ -239,6 +310,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       );
 
   void onSoftKeyboardChanged(bool visible) {
+    _hidingSoftKeyboard = false;
     if (!visible) {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       // [pi.version.isNotEmpty] -> check ready or not, avoid login without soft-keyboard
@@ -268,7 +340,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       _timer = Timer(kMobileDelaySoftKeyboardFocus, () {
         SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual,
             overlays: SystemUiOverlay.values);
-        _mobileFocusNode.requestFocus();
+        // The send-text row owns the IME while it is open.
+        if (!_keyboard.composerOpen) _mobileFocusNode.requestFocus();
       });
     }
     // update for Scaffold
@@ -418,6 +491,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     // destroy first, so that our _value trick can work
     _value = initText;
     _textController.text = _value;
+    if (isAndroid) _keyboard.reset();
     setState(() => _showEdit = false);
     _timer?.cancel();
     _timer = Timer(kMobileDelaySoftKeyboard, () {
@@ -433,6 +507,27 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     });
   }
 
+  void _hideSoftKeyboard() {
+    setState(() {
+      _hidingSoftKeyboard = true;
+      _showEdit = false;
+      gFFI.invokeMethod("enable_soft_keyboard", false);
+      _mobileFocusNode.unfocus();
+      _physicalFocusNode.requestFocus();
+    });
+  }
+
+  // The keyboard goes away while the toolbar's keys are edited, and comes back
+  // with the new ones.
+  Future<void> _customizeKeyboardToolbar() async {
+    _hideSoftKeyboard();
+    await Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => KeyboardToolbarEditor(macPeer: _keyboard.isMacPeer)));
+    if (!mounted) return;
+    _keyboard.reloadLayout();
+    openKeyboard();
+  }
+
   Widget _bottomWidget() => _showGestureHelp
       ? getGestureHelp()
       : (_showBar && gFFI.ffiModel.pi.displays.isNotEmpty
@@ -443,7 +538,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final keyboardIsVisible =
         keyboardVisibilityController.isVisible && _showEdit;
-    final showActionButton = !_showBar || keyboardIsVisible || _showGestureHelp;
+    // On Android the keyboard toolbar has its own hide key.
+    final showActionButton =
+        (!_showBar || keyboardIsVisible || _showGestureHelp) &&
+            !(isAndroid && keyboardIsVisible);
 
     return WillPopScope(
       onWillPop: () async {
@@ -515,14 +613,20 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                   gFFI.canvasModel.updateViewStyle();
                                 });
                               }
-                              return Container(
-                                color: MyTheme.canvasColor,
-                                child: inputModel.isPhysicalMouse.value
-                                    ? getBodyForMobile()
-                                    : RawTouchGestureDetectorRegion(
-                                        child: getBodyForMobile(),
-                                        ffi: gFFI,
-                                      ),
+                              return ListenableBuilder(
+                                listenable: _multiDisplay,
+                                builder: (context, _) => Container(
+                                  color: MyTheme.canvasColor,
+                                  // Nothing goes to the remote while the
+                                  // displays are being rearranged.
+                                  child: inputModel.isPhysicalMouse.value ||
+                                          _multiDisplay.unlocked
+                                      ? getBodyForMobile()
+                                      : RawTouchGestureDetectorRegion(
+                                          child: getBodyForMobile(),
+                                          ffi: gFFI,
+                                        ),
+                                ),
                               );
                             }),
                           ),
@@ -573,7 +677,8 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                       icon: Icon(Icons.tv),
                       onPressed: () {
                         setState(() => _showEdit = false);
-                        showOptions(context, widget.id, gFFI.dialogManager);
+                        showOptions(context, widget.id, gFFI.dialogManager,
+                            multiDisplay: _multiDisplay);
                       },
                     )
                   ] +
@@ -597,6 +702,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                                   color: Colors.white,
                                   icon: Icon(Icons.keyboard),
                                   onPressed: openKeyboard),
+                              if (isAndroid)
+                                IconButton(
+                                  color: Colors.white,
+                                  tooltip: translate('Files'),
+                                  icon: const Icon(Icons.swap_vert),
+                                  onPressed: () =>
+                                      showQuickShareSheet(context, _quickShare),
+                                ),
                               IconButton(
                                 color: Colors.white,
                                 icon: Icon(gFFI.ffiModel.touchMode
@@ -656,24 +769,43 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   Widget getBodyForMobile() {
     final keyboardIsVisible = keyboardVisibilityController.isVisible;
+    final showKeyboardToolbar = isAndroid && keyboardIsVisible && _showEdit;
     return Container(
         color: MyTheme.canvasColor,
         child: Stack(children: () {
           final paints = [
-            ImagePaint(ffiModel: gFFI.ffiModel),
+            _multiDisplay.active
+                ? MultiDisplayPaint(controller: _multiDisplay)
+                : ImagePaint(ffiModel: gFFI.ffiModel),
             Positioned(
               top: 10,
               right: 10,
-              child: QualityMonitor(gFFI.qualityMonitorModel),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.end,
+                children: [
+                  QualityMonitor(gFFI.qualityMonitorModel),
+                  if (!_multiDisplay.active)
+                    DisplaySwitcher(ffi: gFFI, peerId: widget.id),
+                ],
+              ),
             ),
-            KeyHelpTools(
-                keyboardIsVisible: keyboardIsVisible,
-                showGestureHelp: _showGestureHelp),
+            // Keep this slot's widget type stable: shifting the siblings below
+            // would recreate the soft keyboard field and close the keyboard.
+            Builder(
+                builder: (_) => showKeyboardToolbar ||
+                        (_hidingSoftKeyboard && keyboardIsVisible)
+                    ? const SizedBox.shrink()
+                    : KeyHelpTools(
+                        keyboardIsVisible: keyboardIsVisible,
+                        showGestureHelp: _showGestureHelp)),
             SizedBox(
               width: 0,
               height: 0,
               child: !_showEdit
                   ? Container()
+                  : isAndroid
+                  ? RemoteKeyboardField(controller: _keyboard)
                   : TextFormField(
                       textInputAction: TextInputAction.newline,
                       autocorrect: false,
@@ -710,6 +842,29 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           } else {
             paints.add(FloatingMouseWidgets(
               ffi: gFFI,
+            ));
+          }
+          if (_multiDisplay.unlocked) {
+            paints.add(Positioned.fill(
+                child: DisplayRearrangeLayer(controller: _multiDisplay)));
+            paints.add(Positioned(
+              top: 10,
+              left: 0,
+              right: 0,
+              child: Center(
+                  child: DisplayRearrangeBar(controller: _multiDisplay)),
+            ));
+          }
+          if (showKeyboardToolbar) {
+            paints.add(Positioned(
+              left: 0,
+              right: 0,
+              bottom: 0,
+              child: RemoteKeyboardToolbar(
+                controller: _keyboard,
+                onHideKeyboard: _hideSoftKeyboard,
+                onCustomize: _customizeKeyboardToolbar,
+              ),
             ));
           }
           return paints;
@@ -1213,7 +1368,8 @@ class CursorPaint extends StatelessWidget {
 }
 
 void showOptions(
-    BuildContext context, String id, OverlayDialogManager dialogManager) async {
+    BuildContext context, String id, OverlayDialogManager dialogManager,
+    {MobileMultiDisplay? multiDisplay}) async {
   var displays = <Widget>[];
   final pi = gFFI.ffiModel.pi;
   final image = gFFI.ffiModel.getConnectionImageText();
@@ -1223,6 +1379,7 @@ void showOptions(
   final privacyModeState = PrivacyModeState.find(id);
   if (pi.displays.length > 1 &&
       pi.currentDisplay != kAllDisplayValue &&
+      multiDisplay?.active != true &&
       (privacyModeState.isEmpty ||
           allowDisplaySwitchInPrivacyMode(pi, privacyModeState.value))) {
     final cur = pi.currentDisplay;
@@ -1240,6 +1397,7 @@ void showOptions(
           onTap: () {
             if (i == cur) return;
             openMonitorInTheSameTab(i, gFFI, pi);
+            saveLastDisplay(id, i);
             gFFI.dialogManager.dismissAll();
           },
           child: Ink(
@@ -1283,6 +1441,25 @@ void showOptions(
             child: Text(translate('Lock canvas')),
             value: gFFI.canvasModel.locked,
             onChanged: (value) => gFFI.canvasModel.setLocked(value == true)));
+  }
+  if (multiDisplay != null && pi.displays.length > 1) {
+    displayToggles.insertAll(0, [
+      TToggleMenu(
+          child: Text(translate('Show all displays')),
+          value: multiDisplay.enabled,
+          onChanged: (value) {
+            multiDisplay.setEnabled(value == true);
+            dialogManager.dismissAll();
+          }),
+      if (multiDisplay.active)
+        TToggleMenu(
+            child: Text(translate('Rearrange displays')),
+            value: multiDisplay.unlocked,
+            onChanged: (value) {
+              multiDisplay.setUnlocked(value == true);
+              dialogManager.dismissAll();
+            }),
+    ]);
   }
 
   List<TToggleMenu> privacyModeList = [];

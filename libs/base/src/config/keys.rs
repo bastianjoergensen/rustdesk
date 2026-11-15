@@ -104,6 +104,9 @@ pub const OPTION_SHOW_VIRTUAL_MOUSE: &str = "show-virtual-mouse";
 // joystick is the virtual mouse.
 // So `OPTION_SHOW_VIRTUAL_MOUSE` should also be set if `OPTION_SHOW_VIRTUAL_JOYSTICK` is set.
 pub const OPTION_SHOW_VIRTUAL_JOYSTICK: &str = "show-virtual-joystick";
+pub const OPTION_SOFT_KEYBOARD_RAW_INPUT: &str = "soft-keyboard-raw-input";
+// The Android soft keyboard toolbar's keys, as JSON: {"rows": [["esc", "ctrl"], ...]}.
+pub const OPTION_SOFT_KEYBOARD_TOOLBAR: &str = "soft-keyboard-toolbar";
 pub const OPTION_ENABLE_FLUTTER_HTTP_ON_RUST: &str = "enable-flutter-http-on-rust";
 pub const OPTION_ALLOW_ASK_FOR_NOTE: &str = "allow-ask-for-note";
 
@@ -265,6 +268,8 @@ pub const KEYS_LOCAL_SETTINGS: &[&str] = &[
     OPTION_TOUCH_MODE,
     OPTION_SHOW_VIRTUAL_MOUSE,
     OPTION_SHOW_VIRTUAL_JOYSTICK,
+    OPTION_SOFT_KEYBOARD_RAW_INPUT,
+    OPTION_SOFT_KEYBOARD_TOOLBAR,
     OPTION_ENABLE_FLUTTER_HTTP_ON_RUST,
     OPTION_ALLOW_ASK_FOR_NOTE,
 ];

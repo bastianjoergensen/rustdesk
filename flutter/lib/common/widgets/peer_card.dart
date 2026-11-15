@@ -2,6 +2,7 @@ import 'package:bot_toast/bot_toast.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common/widgets/dialog.dart';
+import 'package:flutter_hbb/common/widgets/wake_dialog.dart';
 import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/peer_tab_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
@@ -681,6 +682,19 @@ abstract class BasePeerCard extends StatelessWidget {
     );
   }
 
+  @protected
+  MenuEntryBase<String> _wakeAction(String id) {
+    return MenuEntryButton<String>(
+      childBuilder: (TextStyle? style) => Text(
+        translate('Wake up'),
+        style: style,
+      ),
+      proc: () => showWakeDialog(id),
+      padding: menuPadding,
+      dismissOnClicked: true,
+    );
+  }
+
   /// Only available on Windows.
   @protected
   MenuEntryBase<String> _createShortCutAction(String id) {
@@ -986,6 +1000,9 @@ class RecentPeerCard extends BasePeerCard {
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
     }
+    if (!isWeb) {
+      menuItems.add(_wakeAction(peer.id));
+    }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
     }
@@ -1048,6 +1065,9 @@ class FavoritePeerCard extends BasePeerCard {
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
+    }
+    if (!isWeb) {
+      menuItems.add(_wakeAction(peer.id));
     }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
@@ -1167,6 +1187,9 @@ class AddressBookPeerCard extends BasePeerCard {
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
+    }
+    if (!isWeb) {
+      menuItems.add(_wakeAction(peer.id));
     }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));
@@ -1324,6 +1347,9 @@ class MyGroupPeerCard extends BasePeerCard {
     // menuItems.add(await _openNewConnInOptAction(peer.id));
     if (!isWeb) {
       menuItems.add(await _forceAlwaysRelayAction(peer.id));
+    }
+    if (!isWeb) {
+      menuItems.add(_wakeAction(peer.id));
     }
     if (isWindows && peer.platform == kPeerPlatformWindows) {
       menuItems.add(_rdpAction(context, peer.id));

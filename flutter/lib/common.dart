@@ -30,6 +30,7 @@ import 'package:window_size/window_size.dart' as window_size;
 
 import '../consts.dart';
 import 'common/widgets/overlay.dart';
+import 'common/widgets/wake_dialog.dart';
 import 'mobile/pages/file_manager_page.dart';
 import 'mobile/pages/remote_page.dart';
 import 'mobile/pages/view_camera_page.dart';
@@ -1295,6 +1296,9 @@ void msgBox(SessionID sessionId, String type, String title, String text,
               : null,
         ));
     buttons.insert(0, button);
+  }
+  if (isMobile && text.contains('Remote desktop is offline')) {
+    buttons.insert(0, wakeOfflinePeerButton(dialogManager));
   }
   if (link.isNotEmpty) {
     buttons.insert(0, dialogButton('JumpLink', onPressed: jumplink));

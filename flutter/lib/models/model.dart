@@ -25,6 +25,7 @@ import 'package:flutter_hbb/models/user_model.dart';
 import 'package:flutter_hbb/models/state_model.dart';
 import 'package:flutter_hbb/models/desktop_render_texture.dart';
 import 'package:flutter_hbb/models/terminal_model.dart';
+import 'package:flutter_hbb/models/mobile_display_layout.dart';
 import 'package:flutter_hbb/common/shared_state.dart';
 import 'package:flutter_hbb/utils/multi_window_manager.dart';
 import 'package:flutter_hbb/utils/http_service.dart' as http;
@@ -180,7 +181,13 @@ class FfiModel with ChangeNotifier {
   }
 
   Rect? globalDisplaysRect() => _getDisplaysRect(_pi.displays, true);
-  Rect? displaysRect() => _getDisplaysRect(_pi.getCurDisplays(), false);
+  // Mobile: the all-displays view, see MobileDisplayLayout; null while one
+  // display is shown.
+  MobileDisplayLayout? mobileDisplayLayout;
+
+  Rect? displaysRect() =>
+      mobileDisplayLayout?.bounds ??
+      _getDisplaysRect(_pi.getCurDisplays(), false);
   Rect? _getDisplaysRect(List<Display> displays, bool useDisplayScale) {
     if (displays.isEmpty) {
       return null;
@@ -1087,6 +1094,9 @@ class FfiModel with ChangeNotifier {
     _timer?.cancel();
     if (hasRetry) {
       _timer = Timer(Duration(seconds: _reconnects), () {
+        // The page may be gone by now, and "Connecting..." would show on the
+        // home page instead.
+        if (parent.target?.closed == true) return;
         reconnect(dialogManager, sessionId, false);
       });
       _reconnects *= 2;
@@ -1100,6 +1110,20 @@ class FfiModel with ChangeNotifier {
     _pendingRestoreTimer?.cancel();
     _pendingRestoreTimer = null;
     pendingMonitorRestore = null;
+  }
+
+  /// Reconnects right away if a retry is waiting out its back-off, e.g. when
+  /// the app comes back to the foreground: the wait doubles with every failed
+  /// attempt, and attempts keep failing while the app is in the background.
+  void reconnectIfPending() {
+    final timer = _timer;
+    if (timer == null || !timer.isActive) return;
+    final ffi = parent.target;
+    if (ffi == null || ffi.closed) return;
+    timer.cancel();
+    _timer = null;
+    _reconnects = 1;
+    reconnect(ffi.dialogManager, sessionId, false);
   }
 
   void cancelPendingRestoreTimer() {
@@ -1176,11 +1200,18 @@ class FfiModel with ChangeNotifier {
 
   void showConnectedWaitingForImage(OverlayDialogManager dialogManager,
       SessionID sessionId, String type, String title, String text) {
+    final tag = '$sessionId-waiting-for-image';
     onClose() {
+      // It can outlive its page, and nothing would close it then.
+      dialogManager.dismissByTag(tag);
       closeConnection();
     }
 
     if (waitForFirstImage.isFalse) return;
+    // A reconnect shows it again before an image arrives. The tag then points
+    // at the new dialog only, and the one on screen could never be closed.
+    dialogManager.dismissByTag(tag);
+    waitForImageTimer?.cancel();
     dialogManager.show(
       (setState, close, context) => CustomAlertDialog(
           title: null,
@@ -1189,7 +1220,7 @@ class FfiModel with ChangeNotifier {
             dialogButton("Cancel", onPressed: onClose, isOutline: true)
           ],
           onCancel: onClose),
-      tag: '$sessionId-waiting-for-image',
+      tag: tag,
     );
     waitForImageDialogShow.value = true;
     waitForImageTimer = Timer(Duration(milliseconds: 1500), () {
@@ -2013,12 +2044,18 @@ class ImageModel with ChangeNotifier {
     return true;
   }
 
+  // What the mobile view zooms: all displays in the all-displays view.
+  Size get _mobileViewSize =>
+      parent.target?.ffiModel.mobileDisplayLayout?.bounds.size ??
+      Size(_image!.width.toDouble(), _image!.height.toDouble());
+
   // mobile only
   double get maxScale {
     if (_image == null) return 1.5;
     final size = parent.target!.canvasModel.getSize();
-    final xscale = size.width / _image!.width;
-    final yscale = size.height / _image!.height;
+    final view = _mobileViewSize;
+    final xscale = size.width / view.width;
+    final yscale = size.height / view.height;
     return max(1.5, max(xscale, yscale));
   }
 
@@ -2026,8 +2063,9 @@ class ImageModel with ChangeNotifier {
   double get minScale {
     if (_image == null) return 1.5;
     final size = parent.target!.canvasModel.getSize();
-    final xscale = size.width / _image!.width;
-    final yscale = size.height / _image!.height;
+    final view = _mobileViewSize;
+    final xscale = size.width / view.width;
+    final yscale = size.height / view.height;
     return min(xscale, yscale) / 1.5;
   }
 
@@ -2267,6 +2305,11 @@ class CanvasModel with ChangeNotifier {
   Offset? _offsetBeforeMobileSoftKeyboard;
   double? _scaleBeforeMobileSoftKeyboard;
 
+  // The height left to the image while an overlay covers the bottom of the
+  // remote view, e.g. the soft keyboard toolbar, which measures it; null when
+  // there is none.
+  double? mobileCanvasHeight;
+
   // `isMobileCanvasChanged` is used to avoid canvas reset when changing the input method
   // after showing the soft keyboard.
   bool isMobileCanvasChanged = false;
@@ -2362,6 +2405,7 @@ class CanvasModel with ChangeNotifier {
         //   https://github.com/user-attachments/assets/95f047f2-7f47-4a36-8113-5023989a0c81
         h = h - mediaData.padding.top;
       }
+      h = mobileCanvasHeight ?? h;
     }
     return Size(w < 0 ? 0 : w, h < 0 ? 0 : h);
   }
@@ -2404,6 +2448,14 @@ class CanvasModel with ChangeNotifier {
     }
     if (_lastViewStyle.style != viewStyle.style) {
       _resetScroll();
+    }
+    if (isMobile &&
+        (_lastViewStyle.displayWidth != displayWidth ||
+            _lastViewStyle.displayHeight != displayHeight)) {
+      // A view saved while the soft keyboard is up belongs to the previous
+      // display and does not fit this one.
+      _offsetBeforeMobileSoftKeyboard = null;
+      _scaleBeforeMobileSoftKeyboard = null;
     }
     _lastViewStyle = viewStyle;
     _scale = viewStyle.scale;
@@ -2810,6 +2862,10 @@ class CanvasModel with ChangeNotifier {
     final targetOffset = _offsetBeforeMobileSoftKeyboard;
     final targetScale = _scaleBeforeMobileSoftKeyboard;
     if (targetOffset == null || targetScale == null) {
+      // Nothing to go back to, e.g. the display changed meanwhile: fit the
+      // screen again once the keyboard has finished going away.
+      _timerMobileRestoreCanvasOffset =
+          Timer(Duration(milliseconds: 350), () => updateViewStyle());
       return;
     }
     _timerMobileRestoreCanvasOffset = Timer(Duration(milliseconds: 100), () {
@@ -3315,7 +3371,20 @@ class CursorModel with ChangeNotifier {
         return null;
       }
     }
+    // Between the displays of a rearranged all-displays view.
+    final layout = parent.target?.ffiModel.mobileDisplayLayout;
+    if (layout != null && layout.displayAt(newPos) == null) {
+      return null;
+    }
     return newPos;
+  }
+
+  /// Mobile all-displays view: the cursor now is at [p] in the layout, e.g.
+  /// because its display was moved there. Nothing is sent to the remote.
+  void setMobileLayoutPosition(Offset p) {
+    _x = p.dx;
+    _y = p.dy;
+    notifyListeners();
   }
 
   Offset _getNewPos(double x, double y, double adjust) {
@@ -3812,6 +3881,12 @@ class CursorModel with ChangeNotifier {
     }
     _x = double.parse(evt['x']);
     _y = double.parse(evt['y']);
+    final layout = parent.target?.ffiModel.mobileDisplayLayout;
+    if (layout != null) {
+      final p = layout.toLayout(Offset(_x, _y));
+      _x = p.dx;
+      _y = p.dy;
+    }
     try {
       RemoteCursorMovedState.find(id).value = true;
     } catch (e) {
@@ -4027,6 +4102,11 @@ class FFI {
   var connType = ConnType.defaultConn;
   var closed = false;
 
+  // Counts start() calls. Mobile reuses one FFI and session id for every
+  // connection, and a stream an earlier session left open, e.g. its late
+  // "close" event, must not drive or close the current one.
+  int _starts = 0;
+
   /// dialogManager use late to ensure init after main page binding [globalKey]
   late final dialogManager = OverlayDialogManager();
 
@@ -4229,9 +4309,10 @@ class FFI {
     imageModel.updateUserTextureRender();
     final hasGpuTextureRender = bind.mainHasGpuTextureRender();
     final SimpleWrapper<bool> isToNewWindowNotified = SimpleWrapper(false);
+    final thisStart = ++_starts;
     // Preserved for the rgba data.
     stream.listen((message) {
-      if (closed) return;
+      if (closed || thisStart != _starts) return;
       if (tabWindowId != null && !isToNewWindowNotified.value) {
         // Session is read to be moved to a new window.
         // Get the cached data and handle the cached data.

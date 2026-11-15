@@ -1128,10 +1128,14 @@ class InputModel {
         msg: json.encode(modify({'type': type, 'buttons': button.value})));
   }
 
+  /// Called before a mouse button press is sent to the remote.
+  VoidCallback? onRemoteMouseDown;
+
   /// Send mouse press event.
   Future<void> sendMouse(String type, MouseButtons button) async {
     if (!keyboardPerm) return;
     if (isViewCamera) return;
+    if (type == 'down') onRemoteMouseDown?.call();
     await _sendMouseUnchecked(type, button);
   }
 
@@ -1167,6 +1171,13 @@ class InputModel {
   Future<void> moveMouse(double x, double y) async {
     if (!keyboardPerm) return;
     if (isViewCamera) return;
+    // Mobile all-displays view: from where a display is shown to where it is.
+    final layout = parent.target?.ffiModel.mobileDisplayLayout;
+    if (layout != null) {
+      final p = layout.toRemote(Offset(x, y));
+      x = p.dx;
+      y = p.dy;
+    }
     var x2 = x.toInt();
     var y2 = y.toInt();
     await bind.sessionSendMouse(

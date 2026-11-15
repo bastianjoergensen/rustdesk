@@ -488,7 +488,9 @@ class _RawTouchGestureDetectorRegionState
       }
     } else {
       // mobile
-      ffi.canvasModel.updateScale(d.scale / _scale, d.focalPoint);
+      // The canvas starts below the status bar; a global focal point would
+      // zoom around a spot that far below the fingers.
+      ffi.canvasModel.updateScale(d.scale / _scale, d.localFocalPoint);
       _scale = d.scale;
       ffi.canvasModel.panX(d.focalPointDelta.dx);
       ffi.canvasModel.panY(d.focalPointDelta.dy);
