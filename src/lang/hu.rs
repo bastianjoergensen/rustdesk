@@ -817,6 +817,22 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
         ("Could not open a file connection to the PC", ""),
         ("This folder cannot be opened", ""),
         ("In the PC's Downloads folder", ""),
-        ("In Downloads, tap to open", "")
+        ("In Downloads, tap to open", ""),
+        ("PC files", ""),
+        ("Filter this folder", ""),
+        ("Search subfolders too", ""),
+        ("No files found", ""),
+        ("Newest first", ""),
+        ("Largest first", ""),
+        ("Sort", ""),
+        ("Send to Downloads", ""),
+        ("Send here", ""),
+        ("Sending to the PC", ""),
+        ("Sent to the PC", ""),
+        ("This folder is too big to search, open a subfolder first", ""),
+        ("Today", ""),
+        ("Yesterday", ""),
+        ("PC", ""),
+        ("selected", "")
     ].iter().cloned().collect();
 }

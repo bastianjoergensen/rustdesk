@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_hbb/common.dart';
+import 'package:flutter_hbb/consts.dart';
 import 'package:flutter_hbb/models/file_model.dart';
 import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
@@ -43,6 +44,9 @@ class QuickShareTransfer {
 
   /// Set once a received file is in the phone's Downloads.
   String? savedUri;
+
+  /// Set once a received folder is in the phone's Downloads.
+  String? savedFolder;
 }
 
 /// Moves files between this phone and the peer of a remote session while it
@@ -84,8 +88,10 @@ class QuickShare {
         remote.homePath, 'Downloads', remote.options.value.isWindows);
   }
 
+  // Not the file model's own flag: that is only set some time after the
+  // home folder arrives.
   bool get peerIsWindows =>
-      _ffi?.fileModel.remoteController.options.value.isWindows ?? false;
+      _ffi?.ffiModel.pi.platform == kPeerPlatformWindows;
 
   String get peerHome => _ffi?.fileModel.remoteController.homePath ?? '';
 
@@ -112,7 +118,7 @@ class QuickShare {
         connToken: bind.sessionGetConnToken(sessionId: remoteSessionId));
     final remote = ffi.fileModel.remoteController;
     final deadline = DateTime.now().add(const Duration(seconds: 20));
-    while (remote.homePath.isEmpty) {
+    while (remote.homePath.isEmpty || ffi.ffiModel.pi.platform.isEmpty) {
       if (_closed || DateTime.now().isAfter(deadline)) {
         await _closeFfi(ffi);
         throw TimeoutException('No file connection to $peerId');
@@ -128,15 +134,85 @@ class QuickShare {
     final fd =
         await ffi.fileModel.fileFetcher.fetchDirectory(path, false, false);
     fd.format(peerIsWindows);
-    fd.entries.sort((a, b) => b.modifiedTime.compareTo(a.modifiedTime));
     return fd;
   }
 
-  /// Sends local files to the peer's Downloads folder, renaming any whose
-  /// name is taken there so nothing is overwritten.
-  Future<void> sendToPeer(List<String> localPaths) async {
+  /// The peer's drives (Windows only), each with its root as [Entry.path].
+  Future<List<Entry>> drives() async {
+    await connection();
+    if (!peerIsWindows) return [];
+    final fd = await listPeer('/');
+    return [
+      for (final e in fd.entries.where((e) => e.isDrive))
+        e..path = e.name.endsWith(r'\') ? e.name : '${e.name}\\'
+    ];
+  }
+
+  /// The usual folders in the peer's home, as (label, path).
+  List<(String, String)> get places => [
+        for (final name in const [
+          'Desktop',
+          'Downloads',
+          'Documents',
+          'Pictures',
+          'Videos',
+          'Music',
+        ])
+          (name, PathUtil.join(peerHome, name, peerIsWindows)),
+      ];
+
+  /// The newest files directly inside the usual folders.
+  Future<List<Entry>> recentFiles({int limit = 30}) async {
+    await connection();
+    final lists = await Future.wait(places.map((p) => listPeer(p.$2)
+        .then((fd) => fd.entries.where((e) => e.isFile).toList())
+        .catchError((Object _) => <Entry>[])));
+    final files = lists.expand((l) => l).toList()
+      ..sort((a, b) => b.modifiedTime.compareTo(a.modifiedTime));
+    return files.take(limit).toList();
+  }
+
+  /// Files and folders under [dir], at any depth, whose name contains
+  /// [query]. The peer lists the whole tree first, so a large folder takes
+  /// a while; past [timeout] the search gives up.
+  Future<List<Entry>> search(String dir, String query,
+      {Duration timeout = const Duration(seconds: 45), int max = 300}) async {
     final ffi = await connection();
-    final inbox = peerInbox;
+    final fetcher = ffi.fileModel.fileFetcher;
+    final id = JobController.jobID.next();
+    final completer = Completer<FileDirectory>();
+    fetcher.readRecursiveTasks[id] = completer;
+    await bind.sessionReadDirToRemoveRecursive(
+        sessionId: ffi.sessionId,
+        actId: id,
+        path: dir,
+        isRemote: true,
+        showHidden: false);
+    final FileDirectory fd;
+    try {
+      fd = await completer.future.timeout(timeout);
+    } finally {
+      fetcher.readRecursiveTasks.remove(id);
+    }
+    final q = query.toLowerCase();
+    final found = <Entry>[];
+    for (final e in fd.entries) {
+      final rel = e.name.replaceAll(r'\', '/');
+      if (!rel.split('/').last.toLowerCase().contains(q)) continue;
+      found.add(e
+        ..path = PathUtil.join(dir, e.name, peerIsWindows)
+        ..name = rel.split('/').last);
+    }
+    found.sort((a, b) => b.modifiedTime.compareTo(a.modifiedTime));
+    return found.take(max).toList();
+  }
+
+  /// Sends local files to [toDir] on the peer (its Downloads folder by
+  /// default), renaming any whose name is taken there so nothing is
+  /// overwritten.
+  Future<List<int>> sendToPeer(List<String> localPaths, {String? toDir}) async {
+    final ffi = await connection();
+    final inbox = toDir ?? peerInbox;
     final taken = <String>[];
     try {
       taken.addAll((await listPeer(inbox)).entries.map((e) => e.name));
@@ -144,6 +220,7 @@ class QuickShare {
       debugPrint('QuickShare: cannot list $inbox: $e');
     }
     final jobs = ffi.fileModel.jobController;
+    final ids = <int>[];
     for (final path in localPaths) {
       final file = File(path);
       if (!await file.exists()) continue;
@@ -155,6 +232,7 @@ class QuickShare {
         ..path = path
         ..size = await file.length();
       final jobId = jobs.addTransferJob(entry, false);
+      ids.add(jobId);
       transfers.insert(
           0, QuickShareTransfer(jobId: jobId, name: name, toPeer: true));
       await bind.sessionSendFiles(
@@ -167,10 +245,11 @@ class QuickShare {
           isRemote: false,
           isDir: false);
     }
+    return ids;
   }
 
-  /// Fetches a file from the peer into the app's storage, then hands it to
-  /// the phone's Downloads.
+  /// Fetches a file or folder from the peer into the app's storage, then
+  /// hands it to the phone's Downloads.
   Future<void> receiveFromPeer(Entry entry) async {
     final ffi = await connection();
     final dir = Directory(
@@ -191,19 +270,40 @@ class QuickShare {
         fileNum: 0,
         includeHidden: false,
         isRemote: true,
-        isDir: false);
+        isDir: entry.isDirectory);
     await _whenDone(jobId);
     if (job(jobId)?.state != JobState.done) return;
     try {
-      transfer.savedUri = await _channel.invokeMethod<String>(
-          'save_to_downloads', {'path': local, 'name': entry.name});
+      if (entry.isDirectory) {
+        await _saveFolder(Directory(local), entry.name);
+        transfer.savedFolder = 'Download/${entry.name}';
+      } else {
+        transfer.savedUri = await _channel.invokeMethod<String>(
+            'save_to_downloads', {'path': local, 'name': entry.name});
+      }
       transfers.refresh();
     } catch (e) {
       debugPrint('QuickShare: saving ${entry.name} failed: $e');
     } finally {
-      unawaited(File(local).delete().catchError((_) => File(local)));
+      unawaited(FileSystemEntity.isDirectory(local)
+          .then((isDir) => isDir
+              ? Directory(local).delete(recursive: true)
+              : File(local).delete())
+          .catchError((_) => File(local)));
     }
   }
+
+  Future<void> _saveFolder(Directory dir, String name) async {
+    await for (final f in dir.list(recursive: true)) {
+      if (f is! File) continue;
+      final rel = f.path.substring(dir.path.length + 1).split('/');
+      final sub = [name, ...rel.sublist(0, rel.length - 1)].join('/');
+      await _channel.invokeMethod<String>('save_to_downloads',
+          {'path': f.path, 'name': rel.last, 'subdir': sub});
+    }
+  }
+
+  Future<void> whenDone(int jobId) => _whenDone(jobId);
 
   Future<void> _whenDone(int jobId) async {
     while (!_closed) {

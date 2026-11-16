@@ -45,7 +45,10 @@ object QuickShare {
                     }
                     thread {
                         try {
-                            val uri = saveToDownloads(activity, File(path), name)
+                            val subdir = call.argument<String>("subdir")
+                                ?.split('/')?.filter { it.isNotBlank() && it != "." && it != ".." }
+                                ?.joinToString("/") ?: ""
+                            val uri = saveToDownloads(activity, File(path), name, subdir)
                             activity.runOnUiThread { result.success(uri.toString()) }
                         } catch (e: Exception) {
                             Log.e(TAG, "Saving $name failed", e)
@@ -96,7 +99,7 @@ object QuickShare {
         })
     }
 
-    private fun saveToDownloads(context: Context, source: File, name: String): Uri {
+    private fun saveToDownloads(context: Context, source: File, name: String, subdir: String): Uri {
         val mime = MimeTypeMap.getSingleton()
             .getMimeTypeFromExtension(name.substringAfterLast('.', "").lowercase())
             ?: "application/octet-stream"
@@ -106,6 +109,12 @@ object QuickShare {
                 put(MediaStore.Downloads.DISPLAY_NAME, name)
                 put(MediaStore.Downloads.MIME_TYPE, mime)
                 put(MediaStore.Downloads.IS_PENDING, 1)
+                if (subdir.isNotEmpty()) {
+                    put(
+                        MediaStore.Downloads.RELATIVE_PATH,
+                        Environment.DIRECTORY_DOWNLOADS + "/" + subdir
+                    )
+                }
             }
             val uri = resolver.insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, values)
                 ?: throw IllegalStateException("MediaStore refused $name")
@@ -123,7 +132,9 @@ object QuickShare {
             return uri
         }
         @Suppress("DEPRECATION")
-        val dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS)
+        val dir = File(
+            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), subdir
+        )
         dir.mkdirs()
         var target = File(dir, name)
         var i = 2
