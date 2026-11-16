@@ -68,10 +68,19 @@ Future<void> showQuickShareSheet(BuildContext context, QuickShare share) async {
   // filter field would never get one.
   await gFFI.invokeMethod("enable_soft_keyboard", true);
   if (!context.mounted) return;
-  await Navigator.of(context)
-      .push(MaterialPageRoute(builder: (_) => PcFilesPage(share: share)));
+  quickShareSheetOpen = true;
+  try {
+    await Navigator.of(context)
+        .push(MaterialPageRoute(builder: (_) => PcFilesPage(share: share)));
+  } finally {
+    quickShareSheetOpen = false;
+  }
   await gFFI.invokeMethod("enable_soft_keyboard", false);
 }
+
+/// While true, the remote page must leave the phone keyboard enabled when
+/// it hides.
+bool quickShareSheetOpen = false;
 
 enum _Sort { newest, name, size }
 
@@ -177,13 +186,22 @@ class _PcFilesPageState extends State<PcFilesPage> {
     final path = _path;
     final q = _query.text.trim();
     if (path == null || q.isEmpty) return;
+    // The PC cannot stop listing a whole drive once asked, and every other
+    // request waits behind it for minutes.
+    if (RegExp(r'^([A-Za-z]:[\\/]?|/)$').hasMatch(path)) {
+      showToast(translate(
+          'This folder is too big to search, open a subfolder first'));
+      return;
+    }
     setState(() => _searching = true);
     try {
       final found = await share.search(path, q);
-      if (mounted) setState(() => _searchResults = found);
+      if (mounted && _path == path) setState(() => _searchResults = found);
     } on TimeoutException {
-      showToast(translate(
-          'This folder is too big to search, open a subfolder first'));
+      if (_path == path) {
+        showToast(translate(
+            'This folder is too big to search, open a subfolder first'));
+      }
     } catch (e) {
       debugPrint('QuickShare: search failed: $e');
       showToast(translate('Failed'));

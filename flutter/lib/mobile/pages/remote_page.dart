@@ -315,6 +315,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
       // [pi.version.isNotEmpty] -> check ready or not, avoid login without soft-keyboard
       if (gFFI.chatModel.chatWindowOverlayEntry == null &&
+          !quickShareSheetOpen &&
           gFFI.ffiModel.pi.version.isNotEmpty) {
         gFFI.invokeMethod("enable_soft_keyboard", false);
       }

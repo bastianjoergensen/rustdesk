@@ -112,6 +112,12 @@ class QuickShare {
   }
 
   Future<FFI> _connect() async {
+    final ffi = await _openConnection();
+    _ffi = ffi;
+    return ffi;
+  }
+
+  Future<FFI> _openConnection() async {
     final ffi = FFI(Uuid().v4obj());
     ffi.start(peerId,
         isFileTransfer: true,
@@ -125,7 +131,6 @@ class QuickShare {
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
-    _ffi = ffi;
     return ffi;
   }
 
@@ -174,10 +179,22 @@ class QuickShare {
 
   /// Files and folders under [dir], at any depth, whose name contains
   /// [query]. The peer lists the whole tree first, so a large folder takes
-  /// a while; past [timeout] the search gives up.
+  /// a while; past [timeout] the search gives up. It runs on a connection
+  /// of its own, closed afterwards: the peer keeps listing a huge tree after
+  /// the search gives up, and browsing on a shared connection would stall.
   Future<List<Entry>> search(String dir, String query,
       {Duration timeout = const Duration(seconds: 45), int max = 300}) async {
-    final ffi = await connection();
+    await connection();
+    final ffi = await _openConnection();
+    try {
+      return await _search(ffi, dir, query, timeout, max);
+    } finally {
+      unawaited(_closeFfi(ffi));
+    }
+  }
+
+  Future<List<Entry>> _search(FFI ffi, String dir, String query,
+      Duration timeout, int max) async {
     final fetcher = ffi.fileModel.fileFetcher;
     final id = JobController.jobID.next();
     final completer = Completer<FileDirectory>();
