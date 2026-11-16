@@ -71,6 +71,41 @@ class RemoteKeyboardController extends ChangeNotifier {
   int? _focusDisplay;
 
   InputModel get _input => ffi.inputModel;
+
+  // Each bind call runs on a pool thread, so back-to-back calls can reach
+  // the peer out of order: a correction's backspaces landed after the text
+  // that replaced it. Every key goes out only after the previous one.
+  Future<void> _queue = Future.value();
+
+  void _enqueue(Future<void> Function() send) {
+    // Windows apps fed a correction's keys back to back typed some of them
+    // as blanks or repeats ("dog" came out "ggg"), so bursts are paced.
+    _queue = _queue
+        .then((_) => send())
+        .then((_) => Future.delayed(const Duration(milliseconds: 30)))
+        .catchError(
+            (Object e) => debugPrint('RemoteKeyboard: send failed: $e'));
+  }
+
+  void _key(String name) {
+    final input = _input;
+    if (!input.keyboardPerm || input.isViewCamera) return;
+    final alt = input.alt, ctrl = input.ctrl, shift = input.shift;
+    final command = input.command;
+    _enqueue(() => bind.sessionInputKey(
+        sessionId: ffi.sessionId,
+        name: name,
+        down: false,
+        press: true,
+        alt: alt,
+        ctrl: ctrl,
+        shift: shift,
+        command: command));
+  }
+
+  void _string(String s) =>
+      _enqueue(() => bind.sessionInputString(sessionId: ffi.sessionId, value: s));
+
   bool get isMacPeer => ffi.ffiModel.pi.platform == kPeerPlatformMacOS;
   bool get composerOpen => _composerOpen;
   bool get moreOpen => _moreOpen;
@@ -189,7 +224,7 @@ class RemoteKeyboardController extends ChangeNotifier {
         case SoftKeyText(text: final s):
           if (shortcut) {
             for (final ch in s.characters) {
-              _input.inputKey(ch);
+              _key(ch);
             }
           } else {
             _type(_input.shift ? s.toUpperCase() : s);
@@ -198,12 +233,12 @@ class RemoteKeyboardController extends ChangeNotifier {
           final wasShift = _input.shift;
           if (shift) _input.shift = true;
           for (var i = 0; i < count; i++) {
-            _input.inputKey(key);
+            _key(key);
           }
           _input.shift = wasShift;
         case SoftKeySelectAll():
           _withModifier(isMacPeer ? RemoteModifier.meta : RemoteModifier.ctrl,
-              () => _input.inputKey('VK_A'));
+              () => _key('VK_A'));
       }
     }
     _consumeOnce();
@@ -215,11 +250,14 @@ class RemoteKeyboardController extends ChangeNotifier {
   }
 
   void _type(String s) {
-    if (s.isEmpty) return;
-    if (s.length == 1) {
-      _input.inputKey(s == ' ' ? 'VK_SPACE' : s);
-    } else {
-      bind.sessionInputString(sessionId: ffi.sessionId, value: s);
+    // One key per character: a Windows peer sometimes typed a whole string
+    // sent at once (an autocorrected word) as blanks.
+    for (final ch in s.characters) {
+      if (ch.length == 1) {
+        _key(ch == ' ' ? 'VK_SPACE' : ch);
+      } else {
+        _string(ch);
+      }
     }
   }
 
@@ -236,13 +274,13 @@ class RemoteKeyboardController extends ChangeNotifier {
           _type(t);
         case SoftKeyPress(:final key, :final count):
           for (var i = 0; i < count; i++) {
-            _input.inputKey(key);
+            _key(key);
           }
         case SoftKeySelectAll():
           break;
       }
     }
-    if (enter) _input.inputKey(kSoftKeyEnter);
+    if (enter) _key(kSoftKeyEnter);
     saved.forEach(_setFlag);
     _scheduleReset();
   }
@@ -250,7 +288,7 @@ class RemoteKeyboardController extends ChangeNotifier {
   /// A toolbar key: sent with the latched modifiers, which it then consumes.
   void pressKey(String name) {
     if (!_canType) return;
-    _input.inputKey(name);
+    _key(name);
     _consumeOnce();
     _scheduleReset();
   }
@@ -263,7 +301,7 @@ class RemoteKeyboardController extends ChangeNotifier {
     for (final m in held) {
       _setFlag(m, true);
     }
-    _input.inputKey(key.name);
+    _key(key.name);
     saved.forEach(_setFlag);
     _consumeOnce();
     _scheduleReset();
@@ -326,7 +364,7 @@ class RemoteKeyboardController extends ChangeNotifier {
         !_usedWhileLatched.contains(m) &&
         !isMacPeer &&
         _canType) {
-      _input.inputKey('Meta');
+      _key('Meta');
     }
   }
 
