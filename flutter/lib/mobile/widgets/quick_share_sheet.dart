@@ -63,9 +63,14 @@ Future<List<int>> sendWithToast(QuickShare share, List<String> paths,
 }
 
 /// Opens the browser for the PC's files.
-void showQuickShareSheet(BuildContext context, QuickShare share) {
-  Navigator.of(context)
+Future<void> showQuickShareSheet(BuildContext context, QuickShare share) async {
+  // The remote page turns the phone keyboard off for the window, so the
+  // filter field would never get one.
+  await gFFI.invokeMethod("enable_soft_keyboard", true);
+  if (!context.mounted) return;
+  await Navigator.of(context)
       .push(MaterialPageRoute(builder: (_) => PcFilesPage(share: share)));
+  await gFFI.invokeMethod("enable_soft_keyboard", false);
 }
 
 enum _Sort { newest, name, size }

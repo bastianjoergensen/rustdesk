@@ -17,6 +17,7 @@ import '../../common/widgets/login.dart';
 import '../../consts.dart';
 import '../../models/model.dart';
 import '../../models/platform_model.dart';
+import '../../models/state_model.dart';
 import '../widgets/deploy_dialog.dart';
 import '../widgets/dialog.dart';
 import 'home_page.dart';
@@ -1036,6 +1037,13 @@ class _SettingsState extends State<SettingsPage> with WidgetsBindingObserver {
                       )),
                 ),
                 leading: Icon(Icons.info)),
+            if (stateGlobal.updateUrl.value.isNotEmpty)
+              SettingsTile(
+                  onPressed: (context) async {
+                    await launchUrl(Uri.parse('https://rustdesk.com/download'));
+                  },
+                  title: Text(translate('Download new version')),
+                  leading: Icon(Icons.system_update)),
             SettingsTile(
                 title: Text(translate("Build Date")),
                 value: Padding(
