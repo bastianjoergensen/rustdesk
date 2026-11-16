@@ -118,6 +118,23 @@ class QuickShare {
   }
 
   Future<FFI> _openConnection() async {
+    // A file connection opens the folder it was last closed in, and an answer
+    // for it can be taken for the home folder, which every shortcut is built
+    // on. The user's own last folder is put back once home is known.
+    final lastDir =
+        await bind.mainGetPeerOption(id: peerId, key: _kRemoteDir);
+    await bind.mainSetPeerOption(id: peerId, key: _kRemoteDir, value: '');
+    try {
+      return await _startConnection();
+    } finally {
+      await bind.mainSetPeerOption(
+          id: peerId, key: _kRemoteDir, value: lastDir);
+    }
+  }
+
+  static const _kRemoteDir = 'remote_dir';
+
+  Future<FFI> _startConnection() async {
     final ffi = FFI(Uuid().v4obj());
     ffi.start(peerId,
         isFileTransfer: true,
@@ -127,7 +144,7 @@ class QuickShare {
     while (remote.homePath.isEmpty || ffi.ffiModel.pi.platform.isEmpty) {
       if (_closed || DateTime.now().isAfter(deadline)) {
         await _closeFfi(ffi);
-        throw TimeoutException('No file connection to $peerId');
+        throw StateError('No file connection to $peerId');
       }
       await Future.delayed(const Duration(milliseconds: 200));
     }
@@ -179,22 +196,10 @@ class QuickShare {
 
   /// Files and folders under [dir], at any depth, whose name contains
   /// [query]. The peer lists the whole tree first, so a large folder takes
-  /// a while; past [timeout] the search gives up. It runs on a connection
-  /// of its own, closed afterwards: the peer keeps listing a huge tree after
-  /// the search gives up, and browsing on a shared connection would stall.
+  /// a while; past [timeout] the search gives up.
   Future<List<Entry>> search(String dir, String query,
       {Duration timeout = const Duration(seconds: 45), int max = 300}) async {
-    await connection();
-    final ffi = await _openConnection();
-    try {
-      return await _search(ffi, dir, query, timeout, max);
-    } finally {
-      unawaited(_closeFfi(ffi));
-    }
-  }
-
-  Future<List<Entry>> _search(FFI ffi, String dir, String query,
-      Duration timeout, int max) async {
+    final ffi = await connection();
     final fetcher = ffi.fileModel.fileFetcher;
     final id = JobController.jobID.next();
     final completer = Completer<FileDirectory>();
@@ -344,12 +349,16 @@ class QuickShare {
     if (ffi != null) await _closeFfi(ffi);
   }
 
-  static Future<void> _closeFfi(FFI ffi) async {
+  Future<void> _closeFfi(FFI ffi) async {
+    // Closing the file model saves its folder as the peer's last one.
+    final lastDir =
+        await bind.mainGetPeerOption(id: peerId, key: _kRemoteDir);
     try {
       await ffi.fileModel.close();
     } catch (e) {
       debugPrint('QuickShare: closing the file model failed: $e');
     }
+    await bind.mainSetPeerOption(id: peerId, key: _kRemoteDir, value: lastDir);
     await ffi.close();
   }
 }
