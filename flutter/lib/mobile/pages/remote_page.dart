@@ -22,6 +22,7 @@ import '../../models/input_model.dart';
 import '../../models/model.dart';
 import '../../models/quick_share.dart';
 import '../../models/platform_model.dart';
+import '../../models/shortcut_model.dart';
 import '../../utils/image.dart';
 import '../widgets/dialog.dart';
 import '../widgets/custom_scale_widget.dart';
@@ -46,16 +47,44 @@ void _disableAndroidSoftKeyboard({bool? isKeyboardVisible}) {
   }
 }
 
+bool handleMobileLocalKeyEvent(KeyEvent event,
+    {required bool remoteFocused, required InputModel inputModel}) {
+  if (event is KeyUpEvent && inputModel.isViewOnly) {
+    // View-only skips normal modifier cleanup; stale physical keys would
+    // otherwise look like touch selections in the input helper.
+    inputModel.handleKeyUpEventModifiers(event);
+  }
+  if (!remoteFocused &&
+      event is KeyUpEvent &&
+      const [
+        PhysicalKeyboardKey.controlLeft,
+        PhysicalKeyboardKey.controlRight,
+        PhysicalKeyboardKey.altLeft,
+        PhysicalKeyboardKey.altRight,
+        PhysicalKeyboardKey.shiftLeft,
+        PhysicalKeyboardKey.shiftRight,
+        PhysicalKeyboardKey.metaLeft,
+        PhysicalKeyboardKey.metaRight,
+      ].contains(event.physicalKey)) {
+    // Local UI may consume key-ups while the remote input path still owns
+    // the modifiers pressed before focus moved.
+    inputModel.handleKeyEvent(event);
+  }
+  return false;
+}
+
 class RemotePage extends StatefulWidget {
   RemotePage(
       {Key? key,
       required this.id,
+      this.loginMethod = '',
       this.password,
       this.isSharedPassword,
       this.forceRelay})
       : super(key: key);
 
   final String id;
+  final String loginMethod;
   final String? password;
   final bool? isSharedPassword;
   final bool? forceRelay;
@@ -124,6 +153,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       ..addListener(_onMultiDisplayChanged);
     gFFI.start(
       widget.id,
+      loginMethod: widget.loginMethod,
       password: widget.password,
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
@@ -139,6 +169,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     });
     WakelockManager.enable(_uniqueKey);
     _physicalFocusNode.requestFocus();
+    HardwareKeyboard.instance.addHandler(_handleLocalKeyEvent);
     gFFI.inputModel.listenToMouse(true);
     gFFI.qualityMonitorModel.checkShowQualityMonitor(sessionId);
     keyboardSubscription =
@@ -162,6 +193,19 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
           isKeyboardVisible: keyboardVisibilityController.isVisible);
       _restoreLastDisplay();
       _multiDisplay.onFirstImage();
+      // Seed shortcut action callbacks once the session is ready, so that
+      // global keyboard shortcuts work even if the user never opens the
+      // toolbar menu. The returned list is intentionally discarded — the
+      // side effect of registering callbacks (inside toolbarControls) is
+      // what we want here.
+      if (mounted) {
+        toolbarControls(context, widget.id, gFFI);
+        // Mobile has no DesktopTabController, so tab-switch shortcuts will
+        // log a no-handler debug line if a user binds one.
+        registerSessionShortcutActions(gFFI);
+        _registerMobileChatShortcut();
+        registerToolbarShortcuts(context, widget.id, gFFI);
+      }
     });
     WidgetsBinding.instance.addObserver(this);
 
@@ -182,6 +226,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
 
   @override
   Future<void> dispose() async {
+    HardwareKeyboard.instance.removeHandler(_handleLocalKeyEvent);
     WidgetsBinding.instance.removeObserver(this);
     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`
     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
@@ -326,10 +371,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       if (isIOS) {
         _iosKeyboardWorkaroundTimer?.cancel();
         _iosKeyboardWorkaroundTimer = Timer(Duration(milliseconds: 100), () {
-          if (!mounted) return;
+          if (!mounted || gFFI.chatModel.inputNode.hasFocus) return;
           _physicalFocusNode.unfocus();
           _iosKeyboardWorkaroundTimer = Timer(Duration(milliseconds: 50), () {
-            if (!mounted) return;
+            if (!mounted || gFFI.chatModel.inputNode.hasFocus) return;
             _physicalFocusNode.requestFocus();
           });
         });
@@ -409,6 +454,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       // clipboard
       oldValue = '';
     }
+    // This length-only diff assumes the IME appends at the end. If an IME
+    // leaves the caret inside paired punctuation, later insertions can replay
+    // the closing symbol: "()" -> "(a)" sends ")" instead of "a". This is a
+    // client text-diff issue, independent of the host keyboard layout.
     if (newValue.length == oldValue.length) {
       // ?
     } else if (newValue.length < oldValue.length) {
@@ -639,6 +688,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     );
   }
 
+  bool _handleLocalKeyEvent(KeyEvent event) => handleMobileLocalKeyEvent(event,
+      remoteFocused: _physicalFocusNode.hasPrimaryFocus, inputModel: inputModel);
+
   Widget getRawPointerAndKeyBody(Widget child) {
     final ffiModel = Provider.of<FfiModel>(context);
     return RawPointerMouseRegion(
@@ -797,9 +849,14 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
                 builder: (_) => showKeyboardToolbar ||
                         (_hidingSoftKeyboard && keyboardIsVisible)
                     ? const SizedBox.shrink()
-                    : KeyHelpTools(
-                        keyboardIsVisible: keyboardIsVisible,
-                        showGestureHelp: _showGestureHelp)),
+                    : Obx(() {
+                        final chatKeyboardRequested =
+                            gFFI.chatModel.softKeyboardRequested.value;
+                        return KeyHelpTools(
+                            keyboardIsVisible: keyboardIsVisible &&
+                                (_showEdit || chatKeyboardRequested),
+                            showGestureHelp: _showGestureHelp);
+                      })),
             SizedBox(
               width: 0,
               height: 0,
@@ -961,9 +1018,18 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     }();
   }
 
-  onPressedTextChat(String id) {
+  void _registerMobileChatShortcut() {
+    if (!isMobile) return;
+    gFFI.shortcutModel.register(kShortcutActionToggleChat,
+        () => onPressedTextChat(widget.id, requestSoftKeyboard: false));
+  }
+
+  onPressedTextChat(String id, {bool requestSoftKeyboard = true}) {
+    if (gFFI.chatModel.chatWindowOverlayEntry == null) {
+      setState(() => _showEdit = false);
+    }
     gFFI.chatModel.changeCurrentKey(MessageKey(id, ChatModel.clientModeID));
-    gFFI.chatModel.toggleChatOverlay();
+    gFFI.chatModel.toggleChatOverlay(requestSoftKeyboard: requestSoftKeyboard);
   }
 
   showChatOptions(String id) async {
@@ -1131,12 +1197,13 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
 
   @override
   Widget build(BuildContext context) {
-    final hasModifierOn = inputModel.ctrl ||
-        inputModel.alt ||
-        inputModel.shift ||
-        inputModel.command;
-
-    if (!_pin && !hasModifierOn && !widget.requestShow) {
+    final keyboard = HardwareKeyboard.instance;
+    // Keep touch selections visible without physical modifiers opening the bar.
+    final hasTouchModifier = (inputModel.ctrl && !keyboard.isControlPressed) ||
+        (inputModel.alt && !keyboard.isAltPressed) ||
+        (inputModel.shift && !keyboard.isShiftPressed) ||
+        (inputModel.command && !keyboard.isMetaPressed);
+    if (!_pin && !hasTouchModifier && !widget.requestShow) {
       gFFI.cursorModel
           .keyHelpToolsVisibilityChanged(null, widget.keyboardIsVisible);
       return Offstage();
