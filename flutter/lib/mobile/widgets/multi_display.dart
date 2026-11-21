@@ -229,6 +229,33 @@ class MobileMultiDisplay extends ChangeNotifier {
     _notify();
   }
 
+  bool _streamsPaused = false;
+
+  /// Out of sight: the other displays' streams close and the PC stops
+  /// capturing them. The layout stays for [resumeStreams].
+  Future<void> pauseStreams() async {
+    final main = _main;
+    if (_streamsPaused || _streams.isEmpty || main == null) return;
+    _streamsPaused = true;
+    _closeStreams();
+    await bind.sessionSwitchDisplay(
+        isDesktop: false,
+        sessionId: ffi.sessionId,
+        value: Int32List.fromList([main]));
+  }
+
+  Future<void> resumeStreams() async {
+    if (!_streamsPaused) return;
+    _streamsPaused = false;
+    final main = _main;
+    if (_disposed || !active || main == null) return;
+    for (var i = 0; i < ffi.ffiModel.pi.displays.length; i++) {
+      if (i == main || _streams.containsKey(i)) continue;
+      final stream = _DisplayStream(ffi, i, _repaint);
+      if (stream.start()) _streams[i] = stream;
+    }
+  }
+
   void _closeStreams() {
     for (final s in _streams.values) {
       s.close();
@@ -292,6 +319,10 @@ class _DisplayStream {
   Future<void> _onEvent(EventToUI message) async {
     if (_closed || message is! EventToUI_Rgba) return;
     final d = message.field0;
+    if (ffi.imageModel.skipFrames) {
+      platformFFI.nextRgba(sessionId, d);
+      return;
+    }
     final size = platformFFI.getRgbaSize(sessionId, d);
     final rgba = size == 0 ? null : platformFFI.getRgba(sessionId, d, size);
     final rect = ffi.ffiModel.pi.getDisplayRect(d);

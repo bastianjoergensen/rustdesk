@@ -1964,6 +1964,10 @@ class ImageModel with ChangeNotifier {
 
   bool _useTextureRender = false;
 
+  // Set while the mobile remote page is out of sight: frames are let go
+  // without being turned into images nobody sees.
+  bool skipFrames = false;
+
   WeakReference<FFI> parent;
 
   final List<Function(String)> callbacksOnFirstImage = [];
@@ -2000,6 +2004,10 @@ class ImageModel with ChangeNotifier {
   }
 
   onRgba(int display, Uint8List rgba) async {
+    if (skipFrames) {
+      platformFFI.nextRgba(sessionId, display);
+      return;
+    }
     try {
       await decodeAndUpdate(display, rgba);
     } catch (e) {

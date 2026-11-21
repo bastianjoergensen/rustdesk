@@ -18,6 +18,7 @@ import '../../common.dart';
 import '../../common/widgets/overlay.dart';
 import '../../common/widgets/dialog.dart';
 import '../../common/widgets/remote_input.dart';
+import '../../models/background_session.dart';
 import '../../models/input_model.dart';
 import '../../models/model.dart';
 import '../../models/quick_share.dart';
@@ -142,6 +143,13 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   RemoteQrWatcher? _qrWatcher;
   RemoteScreenshots? _screenshots;
 
+  // Out of sight, the session only stays connected.
+  BackgroundSession? _background;
+
+  // The top edge of the remote view, which the system bars move as they come
+  // and go with the soft keyboard.
+  double? _viewTop;
+
   _RemotePageState(String id) {
     initSharedStates(id);
     gFFI.chatModel.voiceCallStatus.value = VoiceCallStatus.notStarted;
@@ -156,6 +164,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         bind.mainGetPeerOptionSync(id: widget.id, key: kKeyLastDisplay));
     _multiDisplay = MobileMultiDisplay(gFFI, widget.id)
       ..addListener(_onMultiDisplayChanged);
+    if (isAndroid) BackgroundSession.restoreFpsAfterKill(widget.id);
     gFFI.start(
       widget.id,
       loginMethod: widget.loginMethod,
@@ -163,6 +172,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       isSharedPassword: widget.isSharedPassword,
       forceRelay: widget.forceRelay,
     );
+    if (isAndroid) BackgroundSession.unmuteAfterKill(gFFI);
     // Android freezes a backgrounded app within seconds and the connection
     // drops; a foreground service keeps it running while another app is open.
     gFFI.invokeMethod('start_session_service',
@@ -187,6 +197,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       _qrWatcher = RemoteQrWatcher(gFFI, _multiDisplay);
       _screenshots = RemoteScreenshots(gFFI);
       gFFI.ffiModel.screenshotHandler = _screenshots!.onResponse;
+      _background = BackgroundSession(gFFI,
+          onAway: _multiDisplay.pauseStreams,
+          onBack: _multiDisplay.resumeStreams);
     }
     gFFI.chatModel
         .changeCurrentKey(MessageKey(widget.id, ChatModel.clientModeID));
@@ -240,6 +253,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     _qrWatcher?.dispose();
     _screenshots?.dispose();
     gFFI.ffiModel.screenshotHandler = null;
+    _background?.dispose();
     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`
     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
     // platform call), so if the app is backgrounded while this page is disposing,
@@ -287,7 +301,22 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     if (state == AppLifecycleState.resumed) {
       trySyncClipboard();
       gFFI.ffiModel.reconnectIfPending();
+      _background?.setInBackground(false);
+    } else if (state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.paused) {
+      _background?.setInBackground(true);
     }
+  }
+
+  // The picture moves against the view's top edge, so it stays where it is on
+  // the screen.
+  @override
+  void didChangeMetrics() {
+    if (!isAndroid || !mounted) return;
+    final top = MediaQueryData.fromView(View.of(context)).padding.top;
+    final last = _viewTop;
+    _viewTop = top;
+    if (last != null && top != last) gFFI.canvasModel.panY(last - top);
   }
 
   // For client side
@@ -952,6 +981,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               ),
             ));
           }
+          if (isAndroid && !showKeyboardToolbar) {
+            paints.add(Positioned.fill(
+                child: _ViewHeightReporter(canvas: gFFI.canvasModel)));
+          }
           return paints;
         }()));
   }
@@ -1413,6 +1446,28 @@ class _KeyHelpToolsState extends State<KeyHelpTools> {
               (_more ? more : []),
         ));
   }
+}
+
+/// Gives the canvas the height the remote view really has. The window's
+/// metrics, which it would use otherwise, include the session bar, so the
+/// picture's bottom went under the bar without the view following it there.
+class _ViewHeightReporter extends StatelessWidget {
+  const _ViewHeightReporter({required this.canvas});
+
+  final CanvasModel canvas;
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(builder: (context, box) {
+        final height = box.maxHeight;
+        if (height.isFinite && height > 0) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (canvas.mobileCanvasHeight == height) return;
+            canvas.mobileCanvasHeight = height;
+            canvas.updateSize();
+          });
+        }
+        return const SizedBox.shrink();
+      });
 }
 
 class ImagePaint extends StatelessWidget {

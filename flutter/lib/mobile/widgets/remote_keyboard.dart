@@ -15,9 +15,6 @@ import 'package:flutter_hbb/models/soft_keyboard_sync.dart';
 /// `once` applies to the next key only, `locked` stays until tapped again.
 enum ModifierLatch { off, once, locked }
 
-// Peer option: the zoom last used while typing, see focusTypingView().
-const _kPeerOptionTypingScale = 'soft-keyboard-typing-scale';
-
 /// Soft-keyboard typing for the mobile remote page: owns the hidden IME
 /// buffer, mirrors its edits to the remote and keeps the sticky modifier and
 /// panel state of [RemoteKeyboardToolbar].
@@ -63,12 +60,6 @@ class RemoteKeyboardController extends ChangeNotifier {
   // the one they were made on.
   int _generation = 0;
   int? _staleGeneration;
-
-  double? _typingScale;
-  bool _typingScaleLoaded = false;
-  // The zoom and display focusTypingView() last showed.
-  double? _focusScale;
-  int? _focusDisplay;
 
   InputModel get _input => ffi.inputModel;
 
@@ -491,59 +482,6 @@ class RemoteKeyboardController extends ChangeNotifier {
     releaseOnce();
   }
 
-  double? get _savedTypingScale {
-    if (!_typingScaleLoaded) {
-      _typingScaleLoaded = true;
-      _typingScale = double.tryParse(bind.mainGetPeerOptionSync(
-          id: ffi.id, key: _kPeerOptionTypingScale));
-    }
-    return _typingScale;
-  }
-
-  /// Shows the remote screen above the keyboard around the mouse cursor, i.e.
-  /// where the user clicked before typing, at the zoom they last typed with.
-  /// Until they zoom while typing once, the current zoom stays.
-  void focusTypingView() {
-    final canvas = ffi.canvasModel;
-    final rect = ffi.ffiModel.rect;
-    final image = ffi.imageModel;
-    if (rect == null || image.image == null) return;
-    final size = canvas.getSize();
-    final scale = (_savedTypingScale ?? canvas.scale)
-        .clamp(image.minScale, image.maxScale)
-        .toDouble();
-    _focusScale = scale;
-    _focusDisplay = ffi.ffiModel.pi.currentDisplay;
-    final cursor = ffi.cursorModel;
-    canvas.update(
-      _centerOn(cursor.x * scale, size.width, rect.width * scale),
-      _centerOn(cursor.y * scale, size.height, rect.height * scale),
-      scale,
-    );
-  }
-
-  static double _centerOn(double at, double view, double image) => image <= view
-      ? (view - image) / 2
-      : (view / 2 - at).clamp(view - image, 0.0).toDouble();
-
-  /// The keyboard is closing: a zoom picked while it was up is kept for the
-  /// next time, also for later sessions with this peer.
-  void keyboardViewClosed() {
-    final focused = _focusScale;
-    _focusScale = null;
-    if (focused == null ||
-        _focusDisplay != ffi.ffiModel.pi.currentDisplay) {
-      return;
-    }
-    final scale = ffi.canvasModel.scale;
-    if ((scale - focused).abs() < 1e-6) return;
-    _typingScale = scale;
-    bind
-        .mainSetPeerOption(
-            id: ffi.id, key: _kPeerOptionTypingScale, value: scale.toString())
-        .catchError((e) => debugPrint('Failed to save the typing zoom: $e'));
-  }
-
   @override
   void dispose() {
     _disposed = true;
@@ -635,8 +573,6 @@ class _RemoteKeyboardToolbarState extends State<RemoteKeyboardToolbar> {
 
   final _boxKey = GlobalKey();
   Rect? _blockedRect;
-  late int _display;
-  Timer? _refocusTimer;
 
   RemoteKeyboardController get c => widget.controller;
   CursorModel get _cursor => c.ffi.cursorModel;
@@ -645,23 +581,14 @@ class _RemoteKeyboardToolbarState extends State<RemoteKeyboardToolbar> {
   void initState() {
     super.initState();
     c.addListener(_onChanged);
-    _display = c.ffi.ffiModel.pi.currentDisplay;
-    c.ffi.ffiModel.addListener(_onFfiChanged);
-    // Same notification KeyHelpTools sends: it saves the view to go back to
-    // when the keyboard closes.
-    _cursor.keyHelpToolsVisibilityChanged(null, true);
   }
 
   @override
   void dispose() {
     c.removeListener(_onChanged);
-    c.ffi.ffiModel.removeListener(_onFfiChanged);
-    _refocusTimer?.cancel();
     c.onToolbarClosed();
     final rect = _blockedRect;
     if (rect != null) _cursor.removeBlockedRect(rect);
-    c.keyboardViewClosed();
-    _cursor.keyHelpToolsVisibilityChanged(null, false);
     c.ffi.canvasModel.mobileCanvasHeight = null;
     super.dispose();
   }
@@ -670,29 +597,16 @@ class _RemoteKeyboardToolbarState extends State<RemoteKeyboardToolbar> {
     if (mounted) setState(() {});
   }
 
-  // Switching the display fits the new one to the screen; once that is done
-  // the typing view comes back.
-  void _onFfiChanged() {
-    final display = c.ffi.ffiModel.pi.currentDisplay;
-    if (display == _display) return;
-    _display = display;
-    _refocusTimer?.cancel();
-    _refocusTimer = Timer(const Duration(milliseconds: 250), () {
-      if (mounted) c.focusTypingView();
-    });
-  }
-
   // The image may use the remote view above the toolbar. It is measured here
   // rather than derived from the window, whose metrics cannot tell what the
-  // keyboard, the status bar and the page leave to the view. The view follows
-  // the keyboard in and the toolbar rows as they come and go, until the user
-  // pans or zooms; after that it stays where they put it.
+  // keyboard, the status bar and the page leave to the view. Only the view's
+  // size changes: the picture stays where it is on the screen.
   void _updateCanvasHeight(RenderStack stack, Size toolbarSize) {
     final canvas = c.ffi.canvasModel;
     final height = stack.size.height - toolbarSize.height;
     if (height <= 0 || canvas.mobileCanvasHeight == height) return;
     canvas.mobileCanvasHeight = height;
-    if (!canvas.isMobileCanvasChanged) c.focusTypingView();
+    canvas.updateSize();
   }
 
   // Touches on the toolbar must not reach the remote screen underneath.
