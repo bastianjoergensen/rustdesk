@@ -193,6 +193,7 @@ const String kOptionVirtualMouseScale = "virtual-mouse-scale";
 const String kOptionShowVirtualJoystick = "show-virtual-joystick";
 const String kOptionSoftKeyboardRawInput = "soft-keyboard-raw-input";
 const String kOptionSoftKeyboardToolbar = "soft-keyboard-toolbar";
+const String kOptionDetectRemoteQr = "detect-remote-qr";
 const String kOptionAllowAskForNoteAtEndOfConnection = "allow-ask-for-note";
 const String kOptionAllowMonitorSwitchMainToolbar = "allow-monitor-switch-main-toolbar";
 const String kOptionAllowMonitorSwitchMinToolbar = "allow-monitor-switch-min-toolbar";

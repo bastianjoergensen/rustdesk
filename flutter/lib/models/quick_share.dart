@@ -66,15 +66,33 @@ class QuickShare {
   final transfers = RxList<QuickShareTransfer>();
 
   /// Files other apps shared with RustDesk (see ShareReceiverActivity) go to
-  /// [onFiles], which returns whether a session took them.
-  static void setIncomingHandler(Future<bool> Function(List<String>)? onFiles) {
+  /// [onFiles], and text to [onText]; each returns whether a session took it.
+  static void setIncomingHandler(Future<bool> Function(List<String>)? onFiles,
+      {Future<bool> Function(String)? onText}) {
     _channel.setMethodCallHandler(onFiles == null
         ? null
         : (call) async {
+            if (call.method == 'incoming_text') {
+              return onText != null && await onText(call.arguments as String);
+            }
             if (call.method != 'incoming') return false;
             return onFiles(List<String>.from(call.arguments as List));
           });
   }
+
+  /// Copies the PNG at [path] into the phone's Pictures/RustDesk, returning
+  /// its content URI.
+  static Future<String?> saveToPictures(String path, String name) =>
+      _channel.invokeMethod<String>(
+          'save_to_pictures', {'path': path, 'name': name});
+
+  /// The Android share sheet, for [text] or the content [uri].
+  static Future<void> shareOut({String? text, String? uri, String? mime}) =>
+      _channel.invokeMethod('share', {'text': text, 'uri': uri, 'mime': mime});
+
+  /// Opens a content [uri] with the app Android picks for it.
+  static Future<void> openUri(String uri) =>
+      _channel.invokeMethod('open', {'uri': uri});
 
   FFI? _ffi;
   Future<FFI>? _connecting;

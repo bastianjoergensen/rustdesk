@@ -31,6 +31,7 @@ import '../widgets/keyboard_toolbar_editor.dart';
 import '../widgets/multi_display.dart';
 import '../widgets/quick_share_sheet.dart';
 import '../widgets/remote_keyboard.dart';
+import '../widgets/remote_screen_tools.dart';
 
 final initText = '1' * 1024;
 
@@ -137,6 +138,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   // Files between the phone and the peer, over a second connection.
   late final QuickShare _quickShare = QuickShare(widget.id, sessionId);
 
+  // QR codes and captures of the PC's screen, for use on the phone.
+  RemoteQrWatcher? _qrWatcher;
+  RemoteScreenshots? _screenshots;
+
   _RemotePageState(String id) {
     initSharedStates(id);
     gFFI.chatModel.voiceCallStatus.value = VoiceCallStatus.notStarted;
@@ -178,7 +183,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
       QuickShare.setIncomingHandler((paths) async {
         unawaited(sendWithToast(_quickShare, paths));
         return true;
-      });
+      }, onText: (text) => sendSharedTextToPeer(gFFI, text));
+      _qrWatcher = RemoteQrWatcher(gFFI);
+      _screenshots = RemoteScreenshots(gFFI);
+      gFFI.ffiModel.screenshotHandler = _screenshots!.onResponse;
     }
     gFFI.chatModel
         .changeCurrentKey(MessageKey(widget.id, ChatModel.clientModeID));
@@ -240,6 +248,9 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     _multiDisplay.dispose();
     unawaited(bind.sessionClose(sessionId: sessionId));
     unawaited(gFFI.invokeMethod('stop_session_service'));
+    _qrWatcher?.dispose();
+    _screenshots?.dispose();
+    gFFI.ffiModel.screenshotHandler = null;
     // https://github.com/flutter/flutter/issues/64935
     super.dispose();
     gFFI.dialogManager.hideMobileActionsOverlay(store: false);
@@ -925,6 +936,21 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
               ),
             ));
           }
+          final qrWatcher = _qrWatcher;
+          if (qrWatcher != null && !_multiDisplay.unlocked) {
+            paints.add(Positioned(
+              top: 10,
+              left: 10,
+              child: RemoteQrChip(
+                ffi: gFFI,
+                watcher: qrWatcher,
+                onOpen: () {
+                  if (_showEdit) _hideSoftKeyboard();
+                  showQrCodes(context, qrWatcher.hits, watcher: qrWatcher);
+                },
+              ),
+            ));
+          }
           return paints;
         }()));
   }
@@ -978,11 +1004,38 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     ];
   }
 
+  // Ways to use on the phone what the PC's screen shows.
+  List<TTextMenu> _screenToolMenus() {
+    final screenshots = _screenshots;
+    if (screenshots == null) return [];
+    final taking = gFFI.ffiModel.timerScreenshot != null;
+    return [
+      TTextMenu(
+        child: Text(translate('Scan QR code')),
+        onPressed: () => scanRemoteScreenForQr(context, gFFI,
+            multiDisplay: _multiDisplay,
+            watcher: _qrWatcher,
+            screenshots: screenshots),
+      ),
+      if (screenshots.supported)
+        TTextMenu(
+          child: Text(taking
+              ? '${translate('Taking screenshot')} ...'
+              : translate('Take screenshot')),
+          onPressed:
+              taking ? null : () => takeRemoteScreenshot(context, screenshots),
+        ),
+    ];
+  }
+
   void showActions(String id) async {
     final size = MediaQuery.of(context).size;
     final x = 120.0;
     final y = size.height;
-    final mobileActionMenus = _getMobileActionMenus();
+    final mobileActionMenus = [
+      ..._screenToolMenus(),
+      ..._getMobileActionMenus(),
+    ];
     final menus = toolbarControls(context, id, gFFI);
 
     final List<PopupMenuEntry<int>> more = [

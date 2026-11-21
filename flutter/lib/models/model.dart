@@ -136,6 +136,8 @@ class FfiModel with ChangeNotifier {
   bool isRefreshing = false;
 
   Timer? timerScreenshot;
+  // Set by the mobile remote page, which handles the PC's answer itself.
+  void Function(String msg)? screenshotHandler;
 
   Rect? get rect => _rect;
   bool get isOriginalResolutionSet =>
@@ -493,6 +495,11 @@ class FfiModel with ChangeNotifier {
     timerScreenshot?.cancel();
     timerScreenshot = null;
     final msg = evt['msg'] ?? '';
+    final handler = screenshotHandler;
+    if (handler != null) {
+      handler(msg);
+      return;
+    }
     final msgBoxType = 'custom-nook-nocancel-hasclose';
     final msgBoxTitle = 'Take screenshot';
     final dialogManager = parent.target!.dialogManager;
