@@ -21,12 +21,14 @@ import 'multi_display.dart';
 /// remote page can offer them without being asked. It looks once the screen
 /// settles, and no more than every few seconds while it keeps changing.
 class RemoteQrWatcher extends ChangeNotifier {
-  RemoteQrWatcher(this._ffi) {
+  RemoteQrWatcher(this._ffi, [this._multiDisplay]) {
     _enabled = bind.mainGetLocalOption(key: kOptionDetectRemoteQr) != 'N';
     _ffi.imageModel.addListener(_onFrame);
+    _multiDisplay?.repaint.addListener(_onFrame);
   }
 
   final FFI _ffi;
+  final MobileMultiDisplay? _multiDisplay;
   late bool _enabled;
   bool _busy = false;
   bool _dirty = false;
@@ -86,17 +88,22 @@ class RemoteQrWatcher extends ChangeNotifier {
       _schedule(_minGap);
       return;
     }
-    final image = _ffi.imageModel.image;
-    if (image == null) return;
+    final images = _shownImages(_ffi, _multiDisplay);
+    if (images.isEmpty) return;
     _dirty = false;
     _busy = true;
     _lastScan = DateTime.now();
-    var found = const <QrHit>[];
+    final found = <QrHit>[];
     try {
-      found = await scanImage(image);
+      for (final image in images) {
+        _addNew(found, await scanImage(image));
+      }
     } catch (e) {
       debugPrint('QR scan failed: $e');
     } finally {
+      for (final image in images) {
+        image.dispose();
+      }
       _busy = false;
     }
     if (_disposed || !_enabled) return;
@@ -113,7 +120,26 @@ class RemoteQrWatcher extends ChangeNotifier {
     _disposed = true;
     _timer?.cancel();
     _ffi.imageModel.removeListener(_onFrame);
+    _multiDisplay?.repaint.removeListener(_onFrame);
     super.dispose();
+  }
+}
+
+/// Copies of the frames the remote page shows: the main display's, and in
+/// the all-displays view the others'. The caller disposes them.
+List<ui.Image> _shownImages(FFI ffi, MobileMultiDisplay? multiDisplay) {
+  final main = ffi.imageModel.image;
+  return [
+    if (main != null) main.clone(),
+    if (multiDisplay != null && multiDisplay.active)
+      for (var i = 0; i < ffi.ffiModel.pi.displays.length; i++)
+        if (multiDisplay.imageOf(i) case final im? when im != main) im.clone(),
+  ];
+}
+
+void _addNew(List<QrHit> to, List<QrHit> hits) {
+  for (final hit in hits) {
+    if (!to.any((h) => h.text == hit.text)) to.add(hit);
   }
 }
 
@@ -604,13 +630,7 @@ Future<void> scanRemoteScreenForQr(BuildContext context, FFI ffi,
     {MobileMultiDisplay? multiDisplay,
     RemoteQrWatcher? watcher,
     RemoteScreenshots? screenshots}) async {
-  final main = ffi.imageModel.image;
-  final images = <ui.Image>[
-    if (main != null) main.clone(),
-    if (multiDisplay != null && multiDisplay.active)
-      for (var i = 0; i < ffi.ffiModel.pi.displays.length; i++)
-        if (multiDisplay.imageOf(i) case final im? when im != main) im.clone(),
-  ];
+  final images = _shownImages(ffi, multiDisplay);
   var cancelled = false;
   final dialogs = ffi.dialogManager;
   var tag = dialogs.showLoading(translate('Looking for QR codes...'),
@@ -619,9 +639,7 @@ Future<void> scanRemoteScreenForQr(BuildContext context, FFI ffi,
   try {
     for (final im in images) {
       if (cancelled) break;
-      for (final hit in await scanImage(im, thorough: true)) {
-        if (!hits.any((h) => h.text == hit.text)) hits.add(hit);
-      }
+      _addNew(hits, await scanImage(im, thorough: true));
     }
     if (hits.isEmpty &&
         !cancelled &&

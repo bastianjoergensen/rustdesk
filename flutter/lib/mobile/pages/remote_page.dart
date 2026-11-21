@@ -184,7 +184,7 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
         unawaited(sendWithToast(_quickShare, paths));
         return true;
       }, onText: (text) => sendSharedTextToPeer(gFFI, text));
-      _qrWatcher = RemoteQrWatcher(gFFI);
+      _qrWatcher = RemoteQrWatcher(gFFI, _multiDisplay);
       _screenshots = RemoteScreenshots(gFFI);
       gFFI.ffiModel.screenshotHandler = _screenshots!.onResponse;
     }
@@ -236,6 +236,10 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
   Future<void> dispose() async {
     HardwareKeyboard.instance.removeHandler(_handleLocalKeyEvent);
     WidgetsBinding.instance.removeObserver(this);
+    // Before the display streams they watch go away.
+    _qrWatcher?.dispose();
+    _screenshots?.dispose();
+    gFFI.ffiModel.screenshotHandler = null;
     // Close the session up-front. `gFFI.close()` below only calls `sessionClose`
     // after several awaits (canvas save, image update, the `enable_soft_keyboard`
     // platform call), so if the app is backgrounded while this page is disposing,
@@ -248,9 +252,6 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     _multiDisplay.dispose();
     unawaited(bind.sessionClose(sessionId: sessionId));
     unawaited(gFFI.invokeMethod('stop_session_service'));
-    _qrWatcher?.dispose();
-    _screenshots?.dispose();
-    gFFI.ffiModel.screenshotHandler = null;
     // https://github.com/flutter/flutter/issues/64935
     super.dispose();
     gFFI.dialogManager.hideMobileActionsOverlay(store: false);

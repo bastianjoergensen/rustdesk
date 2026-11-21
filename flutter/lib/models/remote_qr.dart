@@ -45,7 +45,6 @@ List<QrHit> findQrCodes(Uint8List rgba, int width, int height,
   }
 
   for (final inverted in const [false, true]) {
-    if (inverted && found.isNotEmpty && !thorough) break;
     final bitmap =
         BinaryBitmap(HybridBinarizer(_source(lum, w, 0, 0, w, h, inverted)));
     for (var i = 0; i < maxCodes; i++) {
