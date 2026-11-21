@@ -316,7 +316,11 @@ class _RemotePageState extends State<RemotePage> with WidgetsBindingObserver {
     final top = MediaQueryData.fromView(View.of(context)).padding.top;
     final last = _viewTop;
     _viewTop = top;
-    if (last != null && top != last) gFFI.canvasModel.panY(last - top);
+    if (last == null || top == last) return;
+    // panY would count as the user moving the view, and the view lifted for
+    // the keyboard would then stay up when it closes.
+    final c = gFFI.canvasModel;
+    c.update(c.x, c.y + last - top, c.scale);
   }
 
   // For client side

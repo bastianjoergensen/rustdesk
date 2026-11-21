@@ -11,6 +11,7 @@ import 'package:flutter_hbb/models/keyboard_toolbar_layout.dart';
 import 'package:flutter_hbb/models/model.dart';
 import 'package:flutter_hbb/models/platform_model.dart';
 import 'package:flutter_hbb/models/soft_keyboard_sync.dart';
+import 'package:flutter_hbb/mobile/widgets/typing_spot.dart';
 
 /// `once` applies to the next key only, `locked` stays until tapped again.
 enum ModifierLatch { off, once, locked }
@@ -42,6 +43,7 @@ class RemoteKeyboardController extends ChangeNotifier {
   final FocusNode focusNode;
   final composerText = TextEditingController();
   final composerFocus = FocusNode(debugLabel: 'RemoteKeyboardComposer');
+  late final typingSpot = TypingSpotKeeper(ffi);
 
   final _sync = SoftKeyboardSync();
   final _latches = {
@@ -497,6 +499,7 @@ class RemoteKeyboardController extends ChangeNotifier {
     }
     composerText.dispose();
     composerFocus.dispose();
+    typingSpot.dispose();
     super.dispose();
   }
 
@@ -581,12 +584,14 @@ class _RemoteKeyboardToolbarState extends State<RemoteKeyboardToolbar> {
   void initState() {
     super.initState();
     c.addListener(_onChanged);
+    c.typingSpot.keyboardShown();
   }
 
   @override
   void dispose() {
     c.removeListener(_onChanged);
     c.onToolbarClosed();
+    c.typingSpot.keyboardHidden();
     final rect = _blockedRect;
     if (rect != null) _cursor.removeBlockedRect(rect);
     c.ffi.canvasModel.mobileCanvasHeight = null;
@@ -607,6 +612,7 @@ class _RemoteKeyboardToolbarState extends State<RemoteKeyboardToolbar> {
     if (height <= 0 || canvas.mobileCanvasHeight == height) return;
     canvas.mobileCanvasHeight = height;
     canvas.updateSize();
+    c.typingSpot.viewHeightChanged(height);
   }
 
   // Touches on the toolbar must not reach the remote screen underneath.
